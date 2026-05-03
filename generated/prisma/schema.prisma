@@ -1,0 +1,152 @@
+// PlantPath — Phase 1 schema
+// See ARCHITECTURE.md for the reasoning behind each design decision.
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // directUrl = env("DIRECT_DATABASE_URL") // for migrations; 
+}
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+// Local mirror of Clerk users. Populated via Clerk webhook on
+// user.created / user.updated / user.deleted. Lets every FK reference
+// User.id and enables single-query joins for member lists.
+model User {
+  id        String   @id // Clerk user id (e.g. "user_2abc..."), used directly as PK
+  email     String   @unique
+  name      String?
+  imageUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships WorkspaceMember[]
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy
+// ---------------------------------------------------------------------------
+
+// The tenant. Every domain object hangs off a Workspace via workspaceId.
+// Hard-deletes (operational data, not historical).
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String // human-readable, not unique
+  slug      String   @unique // URL handle, globally unique, stable on rename
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members WorkspaceMember[]
+  plants  Plant[]
+}
+
+// User <-> Workspace join, carrying the role.
+// Ownership is a role here, not a column on Workspace — supports multi-owner cleanly.
+model WorkspaceMember {
+  id          String        @id @default(cuid())
+  workspaceId String
+  userId      String
+  role        WorkspaceRole
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId]) // a user belongs to a workspace at most once
+  @@index([userId]) // dashboard query: "workspaces I'm a member of"
+}
+
+enum WorkspaceRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+// ---------------------------------------------------------------------------
+// Domain
+// ---------------------------------------------------------------------------
+
+// A specific plant being tracked (not a variety/species).
+// Soft-deleted: deletedAt is filtered out of default queries.
+// Soft-delete is required because plants are referenced as parents by other
+// plants (PlantParent.parent uses onDelete: Restrict — see below).
+model Plant {
+  id          String @id @default(cuid())
+  workspaceId String
+
+  // Identity
+  name       String
+  variety    String? // free-text for now; lookup table in Phase 3
+  generation Int? // 0=F0, 1=F1, ...; stored, not derived (recomputed when parents change)
+
+  // State
+  status PlantStatus @default(ACTIVE) // real-world state — separate from deletedAt (UI visibility)
+  notes  String? // markdown allowed; absorbs unstructured user input
+
+  // Lifecycle
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime? // soft-delete marker; default queries filter WHERE deletedAt IS NULL
+
+  // Relations
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  parents   PlantParent[] @relation("PlantToParents") // edges where this plant is the child
+  children  PlantParent[] @relation("PlantToChildren") // edges where this plant is a parent
+
+  @@index([workspaceId, deletedAt]) // primary list query: workspace plants, not soft-deleted
+  @@index([workspaceId, status]) // filtered list views by status
+}
+
+enum PlantStatus {
+  ACTIVE // alive, growing
+  DORMANT // overwintering, etc.
+  DEAD // died — kept visible (with marker), still valid as a parent
+  ARCHIVED // user retired the record but didn't soft-delete
+}
+
+// ---------------------------------------------------------------------------
+// Genealogy
+// ---------------------------------------------------------------------------
+
+// Edges of the genealogy DAG. Each row is one directed parent->child edge.
+// A child has 0, 1, or 2 rows; same shape handles founders, selfing, crosses,
+// and partial knowledge — no special-casing.
+//
+// Cascade asymmetry is the linchpin of the soft-delete design:
+//   - child  onDelete: Cascade  — deleting a child removes its incoming edges (meaningless without it).
+//   - parent onDelete: Restrict — cannot hard-delete a plant referenced as a parent;
+//                                  forces soft-delete, preserves descendants' lineage.
+//
+// No workspaceId here: edges inherit scope through the plants they connect.
+// tRPC enforces same-workspace at write time; queries join back to Plant for defense-in-depth.
+//
+// DAG enforcement (no plant is its own ancestor) is application-level: the
+// cross-recording mutation walks ancestors via recursive CTE before inserting.
+model PlantParent {
+  id        String     @id @default(cuid())
+  childId   String
+  parentId  String
+  role      ParentRole
+  createdAt DateTime   @default(now())
+
+  child  Plant @relation("PlantToParents", fields: [childId], references: [id], onDelete: Cascade)
+  parent Plant @relation("PlantToChildren", fields: [parentId], references: [id], onDelete: Restrict)
+
+  @@unique([childId, parentId]) // a plant is listed as a parent of another at most once
+  @@index([parentId]) // descendants query: "find all children of this plant"
+  @@index([childId]) // ancestors query: "find all parents of this plant"
+}
+
+enum ParentRole {
+  SEED // seed/maternal parent in a cross
+  POLLEN // pollen/paternal parent in a cross
+  SELF // self-pollinated — single row with role=SELF
+  UNKNOWN // parentage recorded but role not known (imported partial data)
+}
