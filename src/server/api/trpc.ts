@@ -6,11 +6,13 @@
  * TL;DR - This is where all the tRPC server stuff is created and plugged in. The pieces you will
  * need to use are documented accordingly near the end.
  */
-import { initTRPC } from "@trpc/server";
+import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
 
 import { db } from "~/server/db";
+
+import { auth } from "@clerk/nextjs/server";
 
 /**
  * 1. CONTEXT
@@ -25,8 +27,10 @@ import { db } from "~/server/db";
  * @see https://trpc.io/docs/server/context
  */
 export const createTRPCContext = async (opts: { headers: Headers }) => {
+  const { userId } = await auth();
   return {
     db,
+    userId,
     ...opts,
   };
 };
@@ -104,3 +108,79 @@ const timingMiddleware = t.middleware(async ({ next, path }) => {
  * are logged in.
  */
 export const publicProcedure = t.procedure.use(timingMiddleware);
+
+
+/**
+ * Protected (authenticated) procedure
+ *
+ * If you want a query or mutation to ONLY be accessible to logged-in users, use this.
+ * It guarantees `ctx.userId` is non-null in downstream resolvers.
+ */
+export const protectedProcedure = t.procedure
+  .use(timingMiddleware)
+  .use(({ ctx, next }) => {
+    if (!ctx.userId) {
+      throw new TRPCError({ code: "UNAUTHORIZED" });
+    }
+    return next({
+      ctx: {
+        ...ctx,
+        userId: ctx.userId, // narrow type from string|null to string
+      },
+    });
+  });
+
+/**
+ * Workspace-scoped procedure
+ *
+ * Requires the input to include `workspaceId`. Looks up the user's WorkspaceMember row
+ * and rejects if not found. Attaches the membership (with role) to ctx.
+ */
+export const workspaceProcedure = protectedProcedure
+  .use(async ({ ctx, getRawInput, next }) => {
+    const rawInput = await getRawInput();
+    const workspaceId = (rawInput as { workspaceId?: string } | undefined)?.workspaceId;
+
+    if (!workspaceId || typeof workspaceId !== "string") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "workspaceId is required",
+      });
+    }
+
+    const membership = await ctx.db.workspaceMember.findUnique({
+      where: {
+        workspaceId_userId: { workspaceId, userId: ctx.userId },
+      },
+    });
+
+    if (!membership) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "You are not a member of this workspace",
+      });
+    }
+
+    return next({
+      ctx: {
+        ...ctx,
+        membership,
+      },
+    });
+  });
+
+/**
+ * Editor-scoped procedure
+ *
+ * Composes workspaceProcedure and additionally rejects VIEWERs. Use for any mutation
+ * that modifies workspace data.
+ */
+export const editorProcedure = workspaceProcedure.use(({ ctx, next }) => {
+  if (ctx.membership.role === "VIEWER") {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "Viewers cannot modify workspace data",
+    });
+  }
+  return next();
+});

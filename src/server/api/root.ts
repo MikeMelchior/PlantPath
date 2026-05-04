@@ -1,4 +1,5 @@
-import { createCallerFactory, createTRPCRouter, publicProcedure } from "~/server/api/trpc";
+import { createCallerFactory, createTRPCRouter } from "~/server/api/trpc";
+import { workspaceRouter } from "./routers/workspace";
 
 /**
  * This is the primary router for your server.
@@ -6,8 +7,7 @@ import { createCallerFactory, createTRPCRouter, publicProcedure } from "~/server
  * All routers added in /api/routers should be manually added here.
  */
 export const appRouter = createTRPCRouter({
-  // example: post: postRouter,
-  health: publicProcedure.query(() => "ok"),
+  workspace: workspaceRouter,
 });
 
 // export type definition of API
