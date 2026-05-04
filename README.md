@@ -1,29 +1,65 @@
-# Create T3 App
+# PlantPath
 
-This is a [T3 Stack](https://create.t3.gg/) project bootstrapped with `create-t3-app`.
+Track plant lineages, cross-pollinations, and trial outcomes — replacing the spreadsheets and notebooks small-scale plant breeders and seed savers use today.
 
-## What's next? How do I make an app with this?
+🌐 **Live demo:** [plantpath.vercel.app](https://plantpath.vercel.app)
 
-We try to keep this project as simple as possible, so you can start with just the scaffolding we set up for you, and add additional things later when they become necessary.
+> **Status:** Currently in Phase 1 (foundation). Auth, deployment, and the core data model are live; workspace and plant management are next. See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and the foundational spec for the phase-by-phase plan.
 
-If you are not familiar with the different technologies used in this project, please refer to the respective docs. If you still are in the wind, please join our [Discord](https://t3.gg/discord) and ask for help.
+<!-- TODO: replace with screenshot of the dashboard once workspace UI lands -->
+<!-- ![PlantPath dashboard](./docs/screenshot.png) -->
 
-- [Next.js](https://nextjs.org)
-- [NextAuth.js](https://next-auth.js.org)
-- [Prisma](https://prisma.io)
-- [Drizzle](https://orm.drizzle.team)
-- [Tailwind CSS](https://tailwindcss.com)
-- [tRPC](https://trpc.io)
+## What it does
 
-## Learn More
+Plant breeders working at small scale — hobbyists stabilizing pepper crosses, seed savers preserving heirloom tomatoes, university students running variety trials — track their work in spreadsheets that weren't designed for it. Lineage gets lost between tabs. Generation numbers drift. Photos live somewhere else. PlantPath is purpose-built for this workflow: every plant has a record, every cross-pollination produces traceable F1 children, and the genealogy graph is queryable end-to-end.
 
-To learn more about the [T3 Stack](https://create.t3.gg/), take a look at the following resources:
+## Stack
 
-- [Documentation](https://create.t3.gg/)
-- [Learn the T3 Stack](https://create.t3.gg/en/faq#what-learning-resources-are-currently-available) — Check out these awesome tutorials
+- **Framework:** [Next.js 15](https://nextjs.org) (App Router) + TypeScript
+- **API:** [tRPC](https://trpc.io) for end-to-end type-safe procedures
+- **Database:** PostgreSQL on [Neon](https://neon.com), accessed via [Prisma](https://prisma.io)
+- **Auth:** [Clerk](https://clerk.com) (user identity only — tenancy is rolled by hand; see [ARCHITECTURE.md](./ARCHITECTURE.md))
+- **UI:** [shadcn/ui](https://ui.shadcn.com) on [Tailwind CSS](https://tailwindcss.com)
+- **Hosting:** [Vercel](https://vercel.com) with preview deployments per PR
 
-You can check out the [create-t3-app GitHub repository](https://github.com/t3-oss/create-t3-app) — your feedback and contributions are welcome!
+## Architecture
 
-## How do I deploy this?
+The substantive design decisions — multi-tenancy without Clerk Organizations, the genealogy graph as a join table, soft-delete driven by cascade integrity, the user-mirror webhook — are documented in [**ARCHITECTURE.md**](./ARCHITECTURE.md). Start there if you're skimming the project to understand how it's built.
 
-Follow our deployment guides for [Vercel](https://create.t3.gg/en/deployment/vercel), [Netlify](https://create.t3.gg/en/deployment/netlify) and [Docker](https://create.t3.gg/en/deployment/docker) for more information.
+## Local development
+
+```bash
+# 1. Clone and install
+git clone https://github.com/<your-username>/plantpath.git
+cd plantpath
+npm install
+
+# 2. Configure environment
+cp .env.example .env
+# Then fill in:
+#   DATABASE_URL                 — Postgres connection (e.g. Neon pooled URL)
+#   DIRECT_URL                   — Direct Postgres URL (for migrations)
+#   CLERK_SECRET_KEY             — From the Clerk dashboard
+#   CLERK_WEBHOOK_SECRET         — From the Clerk webhook config
+#   NEXT_PUBLIC_CLERK_*          — Publishable key and redirect URLs
+
+# 3. Run migrations
+npx prisma migrate dev
+
+# 4. Start the dev server
+npm run dev
+```
+
+The app will be at [localhost:3000](http://localhost:3000). Sign up creates a real Clerk user, but the local webhook can't fire from Clerk to your machine without a tunnel — to test the User mirror end-to-end, deploy to a preview and let Clerk hit your Vercel URL.
+
+## Project status
+
+PlantPath is being built as a portfolio project. The roadmap is structured into phases, each ending in a deployable, presentable state:
+
+| Phase | Focus | Status |
+|---|---|---|
+| 1 | Foundation: auth, workspace, plant CRUD, deployment | In progress |
+| 2 | Multi-tenancy: invitations, roles, photo uploads | Not started |
+| 3 | Genealogy: cross-pollination, family trees, recursive CTE queries | Not started |
+| 4 | Trials, seasons, and events | Not started |
+| 5 | Polish, demo workspace, public launch | Not started |
