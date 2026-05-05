@@ -1,7 +1,4 @@
 import Link from "next/link";
-import { auth } from "@clerk/nextjs/server";
-import { UserButton } from "@clerk/nextjs";
-import { redirect } from "next/navigation";
 
 import { api } from "~/trpc/server";
 import { Button } from "~/components/ui/button";
@@ -9,20 +6,9 @@ import { Card, CardHeader, CardTitle, CardDescription } from "~/components/ui/ca
 import { CreateWorkspaceDialog } from "./_components/create-workspace-dialog";
 
 export default async function DashboardPage() {
-  const { userId } = await auth();
-  if (!userId) redirect("/sign-in");
-
   const workspaces = await api.workspace.list();
 
   return (
-    <div className="min-h-screen">
-      <header className="flex items-center justify-between border-b px-6 py-4">
-        <Link href="/dashboard" className="text-xl font-bold">
-          PlantPath
-        </Link>
-        <UserButton />
-      </header>
-
       <main className="container mx-auto max-w-5xl px-6 py-8">
         <div className="mb-8 flex items-center justify-between">
           <div>
@@ -68,6 +54,5 @@ export default async function DashboardPage() {
           </div>
         )}
       </main>
-    </div>
   );
 }
