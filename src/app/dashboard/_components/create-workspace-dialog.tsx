@@ -46,6 +46,7 @@ export function CreateWorkspaceDialog({
     onSuccess: (workspace) => {
       setOpen(false);
       form.reset();
+      router.refresh(); // Invalidate cache to show new workspace in list
       router.push(`/w/${workspace.slug}`);
     },
   });
