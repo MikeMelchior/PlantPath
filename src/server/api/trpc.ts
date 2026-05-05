@@ -12,7 +12,7 @@ import { ZodError } from "zod";
 
 import { db } from "~/server/db";
 
-import { auth } from "@clerk/nextjs/server";
+import { auth, clerkClient } from "@clerk/nextjs/server";
 
 /**
  * 1. CONTEXT
@@ -27,12 +27,12 @@ import { auth } from "@clerk/nextjs/server";
  * @see https://trpc.io/docs/server/context
  */
 export const createTRPCContext = async (opts: { headers: Headers }) => {
-  const { userId } = await auth();
-  return {
-    db,
-    userId,
-    ...opts,
-  };
+	const { userId } = await auth();
+	return {
+		db,
+		userId,
+		...opts,
+	};
 };
 
 /**
@@ -43,17 +43,17 @@ export const createTRPCContext = async (opts: { headers: Headers }) => {
  * errors on the backend.
  */
 const t = initTRPC.context<typeof createTRPCContext>().create({
-  transformer: superjson,
-  errorFormatter({ shape, error }) {
-    return {
-      ...shape,
-      data: {
-        ...shape.data,
-        zodError:
-          error.cause instanceof ZodError ? error.cause.flatten() : null,
-      },
-    };
-  },
+	transformer: superjson,
+	errorFormatter({ shape, error }) {
+		return {
+			...shape,
+			data: {
+				...shape.data,
+				zodError:
+					error.cause instanceof ZodError ? error.cause.flatten() : null,
+			},
+		};
+	},
 });
 
 /**
@@ -84,20 +84,20 @@ export const createTRPCRouter = t.router;
  * network latency that would occur in production but not in local development.
  */
 const timingMiddleware = t.middleware(async ({ next, path }) => {
-  const start = Date.now();
+	const start = Date.now();
 
-  if (t._config.isDev) {
-    // artificial delay in dev
-    const waitMs = Math.floor(Math.random() * 400) + 100;
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
-  }
+	if (t._config.isDev) {
+		// artificial delay in dev
+		const waitMs = Math.floor(Math.random() * 400) + 100;
+		await new Promise((resolve) => setTimeout(resolve, waitMs));
+	}
 
-  const result = await next();
+	const result = await next();
 
-  const end = Date.now();
-  console.log(`[TRPC] ${path} took ${end - start}ms to execute`);
+	const end = Date.now();
+	console.log(`[TRPC] ${path} took ${end - start}ms to execute`);
 
-  return result;
+	return result;
 });
 
 /**
@@ -117,18 +117,53 @@ export const publicProcedure = t.procedure.use(timingMiddleware);
  * It guarantees `ctx.userId` is non-null in downstream resolvers.
  */
 export const protectedProcedure = t.procedure
-  .use(timingMiddleware)
-  .use(({ ctx, next }) => {
-    if (!ctx.userId) {
-      throw new TRPCError({ code: "UNAUTHORIZED" });
-    }
-    return next({
-      ctx: {
-        ...ctx,
-        userId: ctx.userId, // narrow type from string|null to string
-      },
-    });
-  });
+	.use(timingMiddleware)
+	.use(async ({ ctx, next }) => {
+		if (!ctx.userId) {
+			throw new TRPCError({ code: "UNAUTHORIZED" });
+		}
+
+		// Self-heal: ensure a local User row exists for this Clerk userId.
+		// The webhook is best-effort; this is the guarantee.
+		const existing = await ctx.db.user.findUnique({
+			where: { id: ctx.userId },
+			select: { id: true },
+		});
+
+		if (!existing) {
+			const clerkUser = await (await clerkClient()).users.getUser(ctx.userId);
+			const primaryEmail = clerkUser.emailAddresses.find(
+				(e) => e.id === clerkUser.primaryEmailAddressId,
+			)?.emailAddress;
+
+			if (!primaryEmail) {
+				throw new TRPCError({
+					code: "INTERNAL_SERVER_ERROR",
+					message: "User has no primary email",
+				});
+			}
+
+			const name =
+				[clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ") ||
+				null;
+
+			await ctx.db.user.create({
+				data: {
+					id: ctx.userId,
+					email: primaryEmail,
+					name,
+					imageUrl: clerkUser.imageUrl,
+				},
+			});
+		}
+
+		return next({
+			ctx: {
+				...ctx,
+				userId: ctx.userId,
+			},
+		});
+	});
 
 /**
  * Workspace-scoped procedure
@@ -137,37 +172,37 @@ export const protectedProcedure = t.procedure
  * and rejects if not found. Attaches the membership (with role) to ctx.
  */
 export const workspaceProcedure = protectedProcedure
-  .use(async ({ ctx, getRawInput, next }) => {
-    const rawInput = await getRawInput();
-    const workspaceId = (rawInput as { workspaceId?: string } | undefined)?.workspaceId;
+	.use(async ({ ctx, getRawInput, next }) => {
+		const rawInput = await getRawInput();
+		const workspaceId = (rawInput as { workspaceId?: string } | undefined)?.workspaceId;
 
-    if (!workspaceId || typeof workspaceId !== "string") {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "workspaceId is required",
-      });
-    }
+		if (!workspaceId || typeof workspaceId !== "string") {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message: "workspaceId is required",
+			});
+		}
 
-    const membership = await ctx.db.workspaceMember.findUnique({
-      where: {
-        workspaceId_userId: { workspaceId, userId: ctx.userId },
-      },
-    });
+		const membership = await ctx.db.workspaceMember.findUnique({
+			where: {
+				workspaceId_userId: { workspaceId, userId: ctx.userId },
+			},
+		});
 
-    if (!membership) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "You are not a member of this workspace",
-      });
-    }
+		if (!membership) {
+			throw new TRPCError({
+				code: "FORBIDDEN",
+				message: "You are not a member of this workspace",
+			});
+		}
 
-    return next({
-      ctx: {
-        ...ctx,
-        membership,
-      },
-    });
-  });
+		return next({
+			ctx: {
+				...ctx,
+				membership,
+			},
+		});
+	});
 
 /**
  * Editor-scoped procedure
@@ -176,11 +211,11 @@ export const workspaceProcedure = protectedProcedure
  * that modifies workspace data.
  */
 export const editorProcedure = workspaceProcedure.use(({ ctx, next }) => {
-  if (ctx.membership.role === "VIEWER") {
-    throw new TRPCError({
-      code: "FORBIDDEN",
-      message: "Viewers cannot modify workspace data",
-    });
-  }
-  return next();
+	if (ctx.membership.role === "VIEWER") {
+		throw new TRPCError({
+			code: "FORBIDDEN",
+			message: "Viewers cannot modify workspace data",
+		});
+	}
+	return next();
 });
