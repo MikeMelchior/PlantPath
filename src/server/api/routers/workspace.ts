@@ -2,8 +2,8 @@ import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 
 import {
-  createTRPCRouter,
-  protectedProcedure,
+	createTRPCRouter,
+	protectedProcedure,
 } from "~/server/api/trpc";
 
 /**
@@ -11,89 +11,123 @@ import {
  * "My Pepper Garden!" -> "my-pepper-garden"
  */
 function slugify(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s-]/g, "")  // drop everything that isn't alphanum, space, hyphen
-    .replace(/\s+/g, "-")           // spaces -> hyphens
-    .replace(/-+/g, "-")            // collapse runs of hyphens
-    .replace(/^-|-$/g, "");         // trim leading/trailing hyphens
+	return name
+		.toLowerCase()
+		.trim()
+		.replace(/[^a-z0-9\s-]/g, "")  // drop everything that isn't alphanum, space, hyphen
+		.replace(/\s+/g, "-")           // spaces -> hyphens
+		.replace(/-+/g, "-")            // collapse runs of hyphens
+		.replace(/^-|-$/g, "");         // trim leading/trailing hyphens
 }
 
 export const workspaceRouter = createTRPCRouter({
-  /**
-   * Create a new workspace. The creating user becomes the OWNER.
-   * Slug is derived from the name; collisions are resolved with a counter suffix.
-   */
-  create: protectedProcedure
-    .input(
-      z.object({
-        name: z.string().min(1).max(100),
-      }),
-    )
-    .mutation(async ({ ctx, input }) => {
-      const baseSlug = slugify(input.name);
+	/**
+	 * Create a new workspace. The creating user becomes the OWNER.
+	 * Slug is derived from the name; collisions are resolved with a counter suffix.
+	 */
+	create: protectedProcedure
+		.input(
+			z.object({
+				name: z.string().min(1).max(100),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const baseSlug = slugify(input.name);
 
-      if (!baseSlug) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "Workspace name must contain at least one alphanumeric character",
-        });
-      }
+			if (!baseSlug) {
+				throw new TRPCError({
+					code: "BAD_REQUEST",
+					message: "Workspace name must contain at least one alphanumeric character",
+				});
+			}
 
-      // Find a free slug — try base, then base-2, base-3, etc.
-      let slug = baseSlug;
-      let counter = 2;
-      while (await ctx.db.workspace.findUnique({ where: { slug } })) {
-        slug = `${baseSlug}-${counter}`;
-        counter++;
-        if (counter > 100) {
-          // Sanity escape — should be unreachable in practice.
-          throw new TRPCError({
-            code: "INTERNAL_SERVER_ERROR",
-            message: "Could not generate a unique slug",
-          });
-        }
-      }
+			// Find a free slug — try base, then base-2, base-3, etc.
+			let slug = baseSlug;
+			let counter = 2;
+			while (await ctx.db.workspace.findUnique({ where: { slug } })) {
+				slug = `${baseSlug}-${counter}`;
+				counter++;
+				if (counter > 100) {
+					// Sanity escape — should be unreachable in practice.
+					throw new TRPCError({
+						code: "INTERNAL_SERVER_ERROR",
+						message: "Could not generate a unique slug",
+					});
+				}
+			}
 
-      // Create workspace + OWNER membership atomically.
-      // If either insert fails, both roll back — no orphaned workspace.
-      const workspace = await ctx.db.$transaction(async (tx) => {
-        const ws = await tx.workspace.create({
-          data: {
-            name: input.name,
-            slug,
-          },
-        });
+			// Create workspace + OWNER membership atomically.
+			// If either insert fails, both roll back — no orphaned workspace.
+			const workspace = await ctx.db.$transaction(async (tx) => {
+				const ws = await tx.workspace.create({
+					data: {
+						name: input.name,
+						slug,
+					},
+				});
 
-        await tx.workspaceMember.create({
-          data: {
-            workspaceId: ws.id,
-            userId: ctx.userId,
-            role: "OWNER",
-          },
-        });
+				await tx.workspaceMember.create({
+					data: {
+						workspaceId: ws.id,
+						userId: ctx.userId,
+						role: "OWNER",
+					},
+				});
 
-        return ws;
-      });
+				return ws;
+			});
 
-      return workspace;
-    }),
+			return workspace;
+		}),
 
-  /**
-   * List all workspaces the current user is a member of.
-   * Returns each workspace along with the user's role in it.
-   */
-  list: protectedProcedure.query(async ({ ctx }) => {
-    const memberships = await ctx.db.workspaceMember.findMany({
-      where: { userId: ctx.userId },
-      include: { workspace: true },
-      orderBy: { createdAt: "asc" },
-    });
+	/**
+	 * List all workspaces the current user is a member of.
+	 * Returns each workspace along with the user's role in it.
+	 */
+	list: protectedProcedure.query(async ({ ctx }) => {
+		const memberships = await ctx.db.workspaceMember.findMany({
+			where: { userId: ctx.userId },
+			include: { workspace: true },
+			orderBy: { createdAt: "asc" },
+		});
 
-    return memberships.map((m) => ({
-      ...m.workspace,
-      role: m.role,
-    }));
-  }),
+		return memberships.map((m) => ({
+			...m.workspace,
+			role: m.role,
+		}));
+	}),
+
+	/**
+	 * Look up a workspace by its slug. Scoped to the current user's memberships —
+	 * returns NOT_FOUND if the workspace doesn't exist OR the user isn't a member
+	 * (we deliberately don't distinguish; leaking "this workspace exists but you
+	 * can't see it" is mild information disclosure).
+	 */
+	getBySlug: protectedProcedure
+		.input(z.object({ slug: z.string().min(1) }))
+		.query(async ({ ctx, input }) => {
+
+			const membership = await ctx.db.workspaceMember.findFirst({
+				where: {
+					userId: ctx.userId,
+					workspace: {
+						slug: input.slug,
+					}
+				},
+				include: { workspace: true }
+			})
+
+			if (!membership) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "workspace doesn't exist OR the user isn't a member",
+				});
+			}
+
+			return {
+				...membership.workspace,
+				role: membership.role,
+			}
+		})
+
 });
