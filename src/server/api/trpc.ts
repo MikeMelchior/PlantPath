@@ -147,13 +147,15 @@ export const protectedProcedure = t.procedure
 				[clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(" ") ||
 				null;
 
-			await ctx.db.user.create({
-				data: {
+			await ctx.db.user.upsert({
+				where: { id: ctx.userId },
+				create: {
 					id: ctx.userId,
 					email: primaryEmail,
 					name,
 					imageUrl: clerkUser.imageUrl,
 				},
+				update: {}, // race-safe no-op if a concurrent request beat us to it
 			});
 		}
 
