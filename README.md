@@ -13,6 +13,10 @@ Track plant lineages, cross-pollinations, and trial outcomes — replacing the s
 
 Plant breeders working at small scale — hobbyists stabilizing pepper crosses, seed savers preserving heirloom tomatoes, university students running variety trials — track their work in spreadsheets that weren't designed for it. Lineage gets lost between tabs. Generation numbers drift. Photos live somewhere else. PlantPath is purpose-built for this workflow: every plant has a record, every cross-pollination produces traceable F1 children, and the genealogy graph is queryable end-to-end.
 
+Each plant record also carries a free-text `notes` field (markdown allowed) for the unstructured observations breeders actually keep:
+
+> **Notes:** First true leaves 14 days after sowing. Slight purple veining — cold stress? Tagged the two earliest fruit-setters as F2 seed parents.
+
 ## Stack
 
 - **Framework:** [Next.js 15](https://nextjs.org) (App Router) + TypeScript
