@@ -38,4 +38,4 @@ $promptTemplate = Get-Content -Raw $promptPath
 $prompt = $promptTemplate -replace '\{TASK_DESCRIPTION\}', $taskDescription
 
 Write-Host "Invoking coder agent for: $taskDescription" -ForegroundColor Cyan
-claude -p $prompt --dangerously-skip-permissions
+$prompt | claude --print --dangerously-skip-permissions
