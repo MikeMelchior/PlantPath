@@ -4,6 +4,7 @@ import { TRPCError } from "@trpc/server";
 import {
 	createTRPCRouter,
 	protectedProcedure,
+	workspaceProcedure,
 } from "~/server/api/trpc";
 
 /**
@@ -128,6 +129,30 @@ export const workspaceRouter = createTRPCRouter({
 				...membership.workspace,
 				role: membership.role,
 			}
-		})
+		}),
+
+	/**
+	 * List the members of a workspace, with each member's role and basic user
+	 * info. Any member of the workspace may view the roster (workspaceProcedure
+	 * authorizes membership and scopes the query to this workspace).
+	 */
+	listMembers: workspaceProcedure
+		.input(z.object({ workspaceId: z.string() }))
+		.query(async ({ ctx, input }) => {
+			const members = await ctx.db.workspaceMember.findMany({
+				where: { workspaceId: input.workspaceId },
+				include: { user: true },
+				orderBy: { createdAt: "asc" },
+			});
+
+			return members.map((m) => ({
+				userId: m.userId,
+				role: m.role,
+				name: m.user.name,
+				email: m.user.email,
+				imageUrl: m.user.imageUrl,
+				createdAt: m.createdAt,
+			}));
+		}),
 
 });
