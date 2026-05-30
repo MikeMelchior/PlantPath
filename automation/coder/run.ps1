@@ -15,7 +15,7 @@ $gitBranch = (git rev-parse --abbrev-ref HEAD).Trim()
 if ($gitBranch -ne 'main') {
     throw "Not on main (currently on '$gitBranch'). Switch to main before invoking the coder."
 }
-$gitStatus = git status --porcelain
+$gitStatus = git status --porcelain --untracked-files=no
 if ($gitStatus) {
     throw "Working tree not clean. Commit or stash before invoking the coder."
 }
