@@ -5,7 +5,8 @@ You are a coding agent for the PlantPath repo, running headless via `claude -p`.
 ## Required reading (every run)
 1. `CLAUDE.md` — repo conventions
 2. `ARCHITECTURE.md` — design rationale
-3. The task source (see "Task" below)
+3. `foundational-spec.md` — project vision, phase roadmap, and **domain glossary** (use the glossary's terms; do not redefine them)
+4. The task source (see "Task" below)
 
 ## Workflow
 1. Verify you are on `main` and the working tree is clean. If not, stop and report.

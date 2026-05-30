@@ -28,6 +28,8 @@ The Prisma client is generated to `./generated/prisma` (not `node_modules/.prism
 
 **Read `ARCHITECTURE.md` before making non-trivial schema or tRPC changes.** It documents the *why* behind decisions that are easy to undo accidentally: Clerk-for-identity-but-not-tenancy, the `PlantParent` join table, soft-delete-on-plants-only, and the cascade asymmetry on `PlantParent` (`child: Cascade`, `parent: Restrict`) that *forces* plants to soft-delete.
 
+For project framing (portfolio goals, phase roadmap, current phase) and the domain glossary (F0/F1, selfing, stabilization, etc.), see `foundational-spec.md`. Use the glossary's terms verbatim.
+
 ### tRPC procedure layering
 
 All authorization is done via composed procedures in `src/server/api/trpc.ts`. Use the most specific procedure that fits — do not reimplement these checks inside resolvers.
