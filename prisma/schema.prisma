@@ -46,6 +46,7 @@ model Workspace {
   members     WorkspaceMember[]
   plants      Plant[]
   invitations WorkspaceInvitation[]
+  events      Event[]
 }
 
 // User <-> Workspace join, carrying the role.
@@ -121,6 +122,7 @@ model Plant {
   workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   parents   PlantParent[] @relation("PlantToParents") // edges where this plant is the child
   children  PlantParent[] @relation("PlantToChildren") // edges where this plant is a parent
+  events    Event[]
 
   @@index([workspaceId, deletedAt]) // primary list query: workspace plants, not soft-deleted
   @@index([workspaceId, status]) // filtered list views by status
@@ -131,6 +133,34 @@ enum PlantStatus {
   DORMANT // overwintering, etc.
   DEAD // died — kept visible (with marker), still valid as a parent
   ARCHIVED // user retired the record but didn't soft-delete
+}
+
+// A dated event in a plant's life (the journal/timeline). Hard-deleted with
+// its plant — an event has no meaning without the plant it describes.
+// Carries workspaceId (denormalized) so it scopes like every other domain row.
+model Event {
+  id          String    @id @default(cuid())
+  plantId     String
+  workspaceId String
+  type        EventType
+  occurredAt  DateTime // the day the event happened (user-supplied, not createdAt)
+  notes       String? // optional detail / metrics as free text
+  createdAt   DateTime  @default(now())
+
+  plant     Plant     @relation(fields: [plantId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([plantId, occurredAt]) // timeline query: a plant's events, newest first
+  @@index([workspaceId])
+}
+
+enum EventType {
+  SOW // seed planted
+  GERMINATE // seed sprouted
+  TRANSPLANT // moved to a new container/location
+  HARVEST // pods/fruit collected
+  DEATH // plant died
+  NOTE // generic dated observation
 }
 
 // ---------------------------------------------------------------------------
