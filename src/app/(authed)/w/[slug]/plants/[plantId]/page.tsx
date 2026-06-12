@@ -8,6 +8,7 @@ import { Separator } from "~/components/ui/separator";
 import { PlantStatusBadge } from "../../_components/plant-status-badge";
 import { EditPlantDialog } from "../../_components/edit-plant-dialog";
 import { DeletePlantDialog } from "../../_components/delete-plant-dialog";
+import { EventTimeline } from "./_components/event-timeline";
 
 const ROLE_LABEL: Record<string, string> = {
   SEED: "seed parent",
@@ -162,6 +163,17 @@ export default async function PlantDetailPage({
             )}
           </div>
         </div>
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-muted-foreground mb-3 text-sm font-semibold">
+          Events
+        </h2>
+        <EventTimeline
+          workspaceId={workspace.id}
+          plantId={plant.id}
+          canEdit={canEdit}
+        />
       </section>
     </main>
   );
