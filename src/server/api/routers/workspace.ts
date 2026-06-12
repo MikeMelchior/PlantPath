@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 
+import { WorkspaceRole } from "generated/prisma";
 import {
 	createTRPCRouter,
 	protectedProcedure,
 	workspaceProcedure,
+	ownerProcedure,
 } from "~/server/api/trpc";
 
 /**
@@ -153,6 +155,116 @@ export const workspaceRouter = createTRPCRouter({
 				imageUrl: m.user.imageUrl,
 				createdAt: m.createdAt,
 			}));
+		}),
+
+	/**
+	 * Change a member's role. Owner-only.
+	 *
+	 * Sole-owner protection: if the target is currently the only OWNER and is
+	 * being demoted to a non-OWNER role, the workspace would be left with no
+	 * owner — reject. Transfer ownership (promote another member) first.
+	 */
+	updateMemberRole: ownerProcedure
+		.input(
+			z.object({
+				workspaceId: z.string(),
+				userId: z.string(),
+				role: z.nativeEnum(WorkspaceRole),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const target = await ctx.db.workspaceMember.findUnique({
+				where: {
+					workspaceId_userId: {
+						workspaceId: input.workspaceId,
+						userId: input.userId,
+					},
+				},
+			});
+
+			if (!target) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "That member is not part of this workspace",
+				});
+			}
+
+			// Demoting the last remaining owner would orphan the workspace.
+			if (target.role === "OWNER" && input.role !== "OWNER") {
+				const ownerCount = await ctx.db.workspaceMember.count({
+					where: { workspaceId: input.workspaceId, role: "OWNER" },
+				});
+				if (ownerCount <= 1) {
+					throw new TRPCError({
+						code: "FORBIDDEN",
+						message: "Can't demote the last owner — transfer ownership first",
+					});
+				}
+			}
+
+			return ctx.db.workspaceMember.update({
+				where: {
+					workspaceId_userId: {
+						workspaceId: input.workspaceId,
+						userId: input.userId,
+					},
+				},
+				data: { role: input.role },
+			});
+		}),
+
+	/**
+	 * Remove a member from the workspace. Owner-only.
+	 *
+	 * Sole-owner protection: removing the only OWNER would leave the workspace
+	 * ownerless — reject with the same guidance as a demotion.
+	 */
+	removeMember: ownerProcedure
+		.input(
+			z.object({
+				workspaceId: z.string(),
+				userId: z.string(),
+			}),
+		)
+		.mutation(async ({ ctx, input }) => {
+			const target = await ctx.db.workspaceMember.findUnique({
+				where: {
+					workspaceId_userId: {
+						workspaceId: input.workspaceId,
+						userId: input.userId,
+					},
+				},
+			});
+
+			if (!target) {
+				throw new TRPCError({
+					code: "NOT_FOUND",
+					message: "That member is not part of this workspace",
+				});
+			}
+
+			if (target.role === "OWNER") {
+				const ownerCount = await ctx.db.workspaceMember.count({
+					where: { workspaceId: input.workspaceId, role: "OWNER" },
+				});
+				if (ownerCount <= 1) {
+					throw new TRPCError({
+						code: "FORBIDDEN",
+						message: "Can't remove the last owner — transfer ownership first",
+					});
+				}
+			}
+
+			await ctx.db.workspaceMember.delete({
+				where: {
+					workspaceId_userId: {
+						workspaceId: input.workspaceId,
+						userId: input.userId,
+					},
+				},
+			});
+
+			return { success: true };
 		}),
 
 });

@@ -221,3 +221,19 @@ export const editorProcedure = workspaceProcedure.use(({ ctx, next }) => {
 	}
 	return next();
 });
+
+/**
+ * Owner-scoped procedure
+ *
+ * Composes workspaceProcedure and rejects anyone who isn't an OWNER. Use for
+ * privileged operations like member management (role changes, removals).
+ */
+export const ownerProcedure = workspaceProcedure.use(({ ctx, next }) => {
+	if (ctx.membership.role !== "OWNER") {
+		throw new TRPCError({
+			code: "FORBIDDEN",
+			message: "Only workspace owners can perform this action",
+		});
+	}
+	return next();
+});
