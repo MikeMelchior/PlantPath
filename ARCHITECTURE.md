@@ -15,6 +15,8 @@ The stack is the modern T3 combo: Next.js 15 (App Router) + TypeScript + tRPC + 
 - **The genealogy graph uses a join table (`PlantParent`), not parent columns on `Plant`.** This handles founders, selfing, and crosses with the same shape and supports recursive CTE queries cleanly.
 - **Plants soft-delete; everything else hard-deletes.** Driven by referential integrity needs in the genealogy graph, not by a general "soft-delete everything" preference.
 - **A Clerk webhook mirrors users into the local `User` table** so foreign keys can reference users with referential integrity, and member lookups don't need to fan out to Clerk's API.
+- **Invitations are shareable token links, not emails.** A `WorkspaceInvitation` row carries an unguessable token with an expiry; redeeming it is single-use. No email provider is involved.
+- **Lineage reads (`getAncestors`/`getDescendants`) use Postgres recursive CTEs**, not application-side graph walking — the whole traversal happens in one set-based query.
 
 ## Key design decisions
 
@@ -84,6 +86,60 @@ Workspaces, members, and other operational records hard-delete normally. The dis
 
 `Workspace` has no `ownerId` column. Ownership is expressed through `WorkspaceMember.role = OWNER`. This supports multi-owner workspaces cleanly and avoids syncing a single-owner column with the membership table. "Find owner" becomes a filtered query against an indexed small set, which is fast in practice.
 
+### Invitations are shareable links, not emails
+
+The original Phase 2 plan called for an email-based invite flow (generate a token, send it through Resend or similar, accept via a link in the email). We built a token link model instead: `invitation.create` mints an unguessable token (`randomBytes(24).toString("base64url")`), stores a `WorkspaceInvitation` row, and returns it so the client can build a `/invite/<token>` URL the inviter shares however they like.
+
+Reasons for dropping email:
+
+- **No external dependency.** No Resend account, API key, deliverability tuning, or spam-folder failure mode. One fewer service to provision for a portfolio demo, and the flow works identically in local dev with no tunnel or mail sink.
+- **Simpler, more demoable.** "Copy link, paste it to a collaborator" is one obvious step in a screen recording. The token in the URL *is* the credential, so there's nothing to verify on the email side.
+- **`email` stays optional and purely informational.** The schema keeps an `email` column, but it's nullable and never used as an auth factor — it's a label for "who this link was meant for," not a gate. Anyone with the link can redeem it.
+
+Single-use, time-boxed semantics are enforced on the row, not in a mailbox:
+
+- **Expiry.** `expiresAt` is set `INVITE_TTL_DAYS` (7) out at creation. `accept` and `getByToken` both check it, so a leaked link can't be redeemed indefinitely. `list` filters to `expiresAt > now()` so the owner only sees live invites.
+- **Spent-once.** `acceptedAt` is the spent marker; `accept` rejects a token that already has one. Acceptance runs in a transaction that creates the `WorkspaceMember` (no-op if the user is already a member) and stamps `acceptedAt` + `accepterId` together, so a token can't be redeemed twice even under concurrent requests.
+
+`inviterId` and `accepterId` are stored as **bare Clerk-id strings with no foreign key** to `User`. This is deliberate: an invite is a historical record of "someone invited someone," and it should survive the inviter being removed from the workspace or deleting their account. An FK with a cascade or restrict would either delete the audit trail or block the member removal; loose ids keep the record intact and decoupled. (Contrast with the `User`-referencing FKs elsewhere — those are live relationships we *want* to join and enforce; this is a frozen log line.)
+
+Owner-only gating is done **in-resolver** here rather than via `ownerProcedure`. `create`/`list`/`revoke` run on `workspaceProcedure` and call a local `assertOwner(ctx.membership.role)` helper. This keeps the invitation router independent of `trpc.ts`; the in-line comment notes that once `ownerProcedure` exists (it now does — see below) these can be swapped for it.
+
+### Genealogy reads via recursive CTEs, not application graph-walking
+
+`plant.getAncestors` and `plant.getDescendants` answer "everything up/down the lineage" with a single Postgres `WITH RECURSIVE` query (`$queryRaw`) rather than fetching `PlantParent` rows in a loop and walking the graph in Node. This is the payoff of choosing Postgres over SQLite (see the stack notes) — the lineage queries lean on it directly:
+
+- **One round trip, walked in the database.** Application-side walking is N queries deep (one level per hop) or a full edge-table load plus an in-memory BFS. The CTE does the whole traversal set-based, close to the data, and returns a flat result already annotated with `depth` (1 = direct parent/child, 2 = grandparent, …) and the edge `role`.
+- **Direction is just which column you seed and join on.** Ancestors seed on `childId = root` and recurse `pp.childId = a.parentId`; descendants mirror it (`parentId = root`, recurse `pp.parentId = d.childId`). Same query shape both ways.
+
+**Cycle guard via a depth cap.** The recursion is bounded by `WHERE depth < 50`. The genealogy graph is acyclic *by construction* (a new plant can't be its own ancestor — see below — and the future add-parents flow will ancestor-check before linking), so this cap is belt-and-suspenders: if bad data ever introduced a cycle, the cap stops the query from looping forever instead of hanging the request.
+
+**Soft-deleted plants are treated asymmetrically, on purpose:**
+
+- **Ancestors keep soft-deleted plants.** A removed plant is still a real link in the chain — "this F4 descends from an F1 the user later deleted" is true and worth showing. Lineage outlives removal, so `getAncestors` does *not* filter `deletedAt`. The same logic drives `plant.get`, whose immediate-`parents` include carries no `deletedAt` filter.
+- **Descendants drop soft-deleted plants.** "What came from this plant" is a forward-looking view of current offspring, so `getDescendants` filters `deletedAt IS NULL`, matching `plant.get`'s `children` include (which filters removed children out). A plant the user removed from view shouldn't reappear in a descendant list.
+
+Both queries still filter `p.workspaceId = ${workspaceId}` in the final join — defense-in-depth, since `PlantParent` carries no `workspaceId` of its own and the edges are only scoped through the plants they connect.
+
+### Generation auto-derivation on create
+
+When a plant is created with parents, `plant.create` derives its `generation` as **one past the deepest known parent** (`Math.max(...knownParentGenerations) + 1`). The rule has two deliberate fallbacks:
+
+- **Caller wins.** If the request supplies an explicit `generation`, it's used as-is — imported data may know the generation even when the lineage is incomplete.
+- **Unknown stays null.** If no parent has a recorded generation, the new plant's generation is left `null` rather than guessed. A null propagates honestly instead of inventing an F-number off an unknown base.
+
+This is the write-time half of the "store generation, don't recompute it" decision: the value is computed once when parents are set, then stored on `Plant`, so reads never re-walk the graph for it.
+
+**Create skips cycle-checking, by construction.** A brand-new plant has no descendants yet, so it cannot be an ancestor of any plant it points at — adding parents to a freshly created node can't form a cycle. `create` therefore only validates that each parent exists in the same workspace and isn't soft-deleted; it does *not* run the ancestor walk. The expensive cycle check belongs to the *separate* future mutation that adds parents to an **existing** plant (which can already have descendants and so can close a loop) — that's where the recursive ancestor query will be used as a guard, per the spec's DAG-enforcement note.
+
+### Owner-only operations: `ownerProcedure` and sole-owner protection
+
+Member management (changing roles, removing members) is gated by a new `ownerProcedure` in `trpc.ts`. It composes `workspaceProcedure` exactly like `editorProcedure` does, but rejects anyone whose `membership.role !== "OWNER"`. This is the natural extension of "ownership is a role, not a column": because ownership lives on `WorkspaceMember.role`, the owner gate is just one more role check in the same composed-procedure chain — no special-cased `ownerId` lookup.
+
+`workspace.updateMemberRole` and `workspace.removeMember` run on `ownerProcedure` and add **sole-owner protection**: before demoting an OWNER to a lesser role, or removing an OWNER, they count the workspace's owners and reject (`FORBIDDEN`, "transfer ownership first") if that owner is the last one. This closes the "what happens to the only owner?" question for member management — the answer is the GitHub model: **block the action and require explicit ownership transfer** (promote another member to OWNER first). Multi-owner workspaces are already supported (invites can grant OWNER), so transfer is just "add an owner, then demote/remove yourself."
+
+The count-then-mutate is a small read-modify-write race in theory (two concurrent demotions could each see two owners and both proceed). At portfolio scale this is acceptable; a future hardening could wrap it in a transaction with row locking. The account-deletion side of the same question (what happens when the last owner deletes their Clerk account) is still open — see below.
+
 ### Slugs are stable on rename
 
 Workspaces have both an internal `id` (cuid, FK target, never changes) and a `slug` (URL handle, globally unique, stable by default on rename). Renaming a workspace doesn't change its URL. Users can change their workspace's URL via an explicit action, decoupling display name from URL identity.
@@ -92,7 +148,7 @@ Workspaces have both an internal `id` (cuid, FK target, never changes) and a `sl
 
 These are decisions deferred, not avoided. Each one will need an answer before its implementing phase ships:
 
-- **Sole-owner deletion policy.** When the only OWNER deletes their account, what happens? Default lean: block the deletion and require explicit ownership transfer (GitHub model). Alternatives: auto-promote the longest-tenured EDITOR, or cascade-delete the workspace. Decide before Phase 2 ships member management.
+- **Sole-owner account deletion.** Member management now blocks demoting or removing the last OWNER (transfer-first; see "Owner-only operations"). The remaining open case is the *account*-deletion path: when the only OWNER deletes their Clerk account, the webhook's `user.deleted` would cascade away their membership and orphan the workspace. Resolve before that delete path ships — likely the same transfer-or-block model, enforced at the webhook.
 - **Variety as string vs. lookup table.** Currently a free-text string on `Plant`. Migrate to a `Variety` lookup table when autocomplete and standardization become valuable (likely Phase 3).
 - **Trait modeling.** Free-text tags vs. structured trait taxonomy. Start with tags, formalize if useful.
 - **Real-time collaboration.** Multiple workspace members editing simultaneously. Not needed for Phase 1–2; revisit if it becomes a pain point.
@@ -100,6 +156,9 @@ These are decisions deferred, not avoided. Each one will need an answer before i
 ## Pointers
 
 - **Schema:** [`prisma/schema.prisma`](./prisma/schema.prisma)
-- **tRPC middleware (forthcoming):** `src/server/api/trpc.ts`
+- **tRPC procedures (`workspace`/`editor`/`owner`):** [`src/server/api/trpc.ts`](./src/server/api/trpc.ts)
+- **Invitations router:** [`src/server/api/routers/invitation.ts`](./src/server/api/routers/invitation.ts)
+- **Genealogy reads & generation derivation:** [`src/server/api/routers/plant.ts`](./src/server/api/routers/plant.ts)
+- **Member management & sole-owner protection:** [`src/server/api/routers/workspace.ts`](./src/server/api/routers/workspace.ts)
 - **Webhook handler:** [`src/app/api/webhooks/clerk/route.ts`](./src/app/api/webhooks/clerk/route.ts)
 - **Setup and local development:** [README.md](./README.md)
