@@ -45,12 +45,19 @@ export default async function WorkspacePage({
           </p>
         </div>
 
-        {canEdit && plants.length > 0 && (
-          <CreatePlantDialog
-            workspaceId={workspace.id}
-            trigger={<Button>Add plant</Button>}
-          />
-        )}
+        <div className="flex items-center gap-2">
+          {workspace.role === "OWNER" && (
+            <Button asChild variant="outline">
+              <Link href={`/w/${slug}/invitations`}>Invitations</Link>
+            </Button>
+          )}
+          {canEdit && plants.length > 0 && (
+            <CreatePlantDialog
+              workspaceId={workspace.id}
+              trigger={<Button>Add plant</Button>}
+            />
+          )}
+        </div>
       </header>
 
       {plants.length === 0 ? (
