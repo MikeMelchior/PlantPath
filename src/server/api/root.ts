@@ -9,7 +9,7 @@ import { plantRouter } from "./routers/plant";
  */
 export const appRouter = createTRPCRouter({
   workspace: workspaceRouter,
-  plantRouter: plantRouter,
+  plant: plantRouter,
 });
 
 // export type definition of API
